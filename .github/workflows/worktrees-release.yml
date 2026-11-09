@@ -1,34 +1,49 @@
 name: Worktrees Linux x86_64 release
-# Builds the worktrees branch for Linux x86_64, runs the worktree suite on the
-# runner's ext4 disk (overlay mode), and attaches the tarball to a release.
+# Builds the worktrees branch for Linux x86_64 inside Amazon Linux 2023, so the
+# binaries need only glibc 2.34 and run there and on any newer
+# distro. Runs the worktree suite on the runner's ext4 disk (overlay mode), then
+# attaches the tarball to a release.
 on:
   workflow_dispatch:
     inputs:
       tag:
-        description: Release tag to attach the tarball to (e.g. 9.7.4-wt1)
+        description: Release tag to attach the tarball to (e.g. 9.7.4-wt3)
         required: true
 
 permissions: {}
+
+env:
+  NAME: mysql-${{ inputs.tag }}-linux-x86_64
 
 jobs:
   build:
     runs-on: ubuntu-24.04
     timeout-minutes: 360
+    container: amazonlinux:2023
     permissions:
-      contents: write
-    env:
-      NAME: mysql-${{ inputs.tag }}-linux-x86_64
+      contents: read
     steps:
+      - name: Install toolchain
+        run: >
+          dnf install -y --allowerasing
+          git tar gzip findutils which procps-ng hostname diffutils
+          gcc14 gcc14-c++ cmake ninja-build bison rpcgen pkgconf
+          openssl-devel ncurses-devel openldap-devel cyrus-sasl-devel libcurl-devel
+          libtirpc-devel libaio-devel systemd-devel
+          perl perl-JSON perl-Data-Dumper perl-Time-HiRes perl-Env perl-Memoize perl-Test-Simple
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: refs/tags/${{ inputs.tag }}
           persist-credentials: false
-      - name: Install toolchain
-        run: scripts/ci/bootstrap.sh && sudo apt-get install -y --no-install-recommends libaio-dev libudev-dev
       - name: Build
-        run: >
-          scripts/ci/build.sh release -DWITH_UNIT_TESTS=OFF -DWITH_ROUTER=OFF -DWITH_NDB=OFF
-          -DWITH_ZLIB=bundled -DWITH_SSL=system
+        env:
+          CC: gcc14-gcc
+          CXX: gcc14-g++
+        run: |
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          scripts/ci/build.sh release -DWITH_UNIT_TESTS=OFF -DWITH_ROUTER=OFF -DWITH_NDB=OFF \
+            -DWITH_ZLIB=bundled -DWITH_SSL=system \
+            -DCMAKE_C_COMPILER_LAUNCHER= -DCMAKE_CXX_COMPILER_LAUNCHER=
       - name: Worktree suite (overlay mode on ext4)
         run: scripts/ci/mtr.sh --suite=worktree --parallel=4 --force --max-test-fail=0
       - name: Package
@@ -36,6 +51,22 @@ jobs:
           cmake --install build --prefix "$RUNNER_TEMP/$NAME" --strip
           rm -rf "$RUNNER_TEMP/$NAME/mysql-test"
           tar -czf "$NAME.tar.gz" -C "$RUNNER_TEMP" "$NAME"
+          sha256sum "$NAME.tar.gz"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: ${{ env.NAME }}
+          path: ${{ env.NAME }}.tar.gz
+          if-no-files-found: error
+
+  release:
+    needs: build
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: ${{ env.NAME }}
       - name: Attach to release
         env:
           GH_TOKEN: ${{ github.token }}
