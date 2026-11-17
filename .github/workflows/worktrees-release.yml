@@ -1,24 +1,30 @@
-name: Worktrees Linux x86_64 release
-# Builds the worktrees branch for Linux x86_64 inside Amazon Linux 2023, so the
-# binaries need only glibc 2.34 and run there and on any newer
-# distro. Runs the worktree suite on the runner's ext4 disk (overlay mode), then
-# attaches the tarball to a release.
+name: Worktrees Linux release
+# Builds the worktrees branch for Linux x86_64 and aarch64 inside Amazon Linux 2023, so the
+# binaries need glibc 2.34 and gcc 14's libstdc++ (Amazon Linux 2023, Ubuntu 24.04 and
+# newer; the Docker image ships that libstdc++ itself). Runs the worktree suite on
+# the runner's ext4 disk (overlay mode), then attaches the tarballs to a release
+# and publishes the Docker image.
 on:
   workflow_dispatch:
     inputs:
       tag:
-        description: Release tag to attach the tarball to (e.g. 9.7.4-wt3)
+        description: Release tag to attach the tarballs to (e.g. 9.7.4-wt3)
         required: true
+      arches:
+        description: JSON list of architectures to build (an existing asset for another arch is kept)
+        default: '["x86_64", "aarch64"]'
 
 permissions: {}
 
-env:
-  NAME: mysql-${{ inputs.tag }}-linux-x86_64
-
 jobs:
   build:
-    runs-on: ubuntu-24.04
+    strategy:
+      matrix:
+        arch: ${{ fromJSON(inputs.arches) }}
+    runs-on: ${{ matrix.arch == 'aarch64' && 'ubuntu-24.04-arm' || 'ubuntu-24.04' }}
     timeout-minutes: 360
+    env:
+      NAME: mysql-${{ inputs.tag }}-linux-${{ matrix.arch }}
     container: amazonlinux:2023
     permissions:
       contents: read
@@ -60,7 +66,12 @@ jobs:
 
   release:
     needs: build
+    strategy:
+      matrix:
+        arch: ${{ fromJSON(inputs.arches) }}
     runs-on: ubuntu-24.04
+    env:
+      NAME: mysql-${{ inputs.tag }}-linux-${{ matrix.arch }}
     permissions:
       contents: write
     steps:
@@ -72,3 +83,12 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ inputs.tag }}
         run: gh release upload "$TAG" "$NAME.tar.gz" --clobber -R "$GITHUB_REPOSITORY"
+
+  image:
+    needs: release
+    permissions:
+      contents: read
+      packages: write
+    uses: ./.github/workflows/worktrees-image.yml
+    with:
+      tag: ${{ inputs.tag }}

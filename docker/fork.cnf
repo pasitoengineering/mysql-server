@@ -1,0 +1,5 @@
+[mysqld]
+# Plugins, error messages and charsets come from the fork's install, not the base image's.
+basedir=/usr/local/mysql
+# CREATE WORKTREE in overlay mode needs it above 0.
+innodb_thread_concurrency=64
